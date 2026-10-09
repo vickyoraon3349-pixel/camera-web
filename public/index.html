@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Camera</title>
+
+  <style>
+    body {
+      font-family: Arial;
+      text-align: center;
+      padding: 20px;
+    }
+
+    input, button {
+      padding: 12px;
+      margin: 6px;
+      font-size: 16px;
+    }
+
+    video {
+      width: 100%;
+      max-width: 600px;
+      background: black;
+      margin-top: 15px;
+    }
+
+    #status {
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2>📷 Live Camera</h2>
+
+<input id="room" placeholder="Room ID">
+
+<br>
+
+<button onclick="cameraMode()">Camera Phone</button>
+<button onclick="viewerMode()">Viewer Phone</button>
+
+<p id="status">Room ID डालें और mode चुनें</p>
+
+<video id="video" autoplay playsinline muted></video>
+
+<script>
+
+const roomInput = document.getElementById("room");
+const statusText = document.getElementById("status");
+const video = document.getElementById("video");
+
+let socket;
+let peer;
+let localStream;
+
+function connect() {
+
+  socket = new WebSocket(
+    (location.protocol === "https:" ? "wss://" : "ws://")
+    + location.host
+  );
+
+  socket.onopen = () => {
+
+    socket.send(JSON.stringify({
+      type: "join",
+      room: roomInput.value
+    }));
+
+    statusText.textContent = "Room से connected";
+  };
+
+  socket.onmessage = async (event) => {
+
+    const message = JSON.parse(event.data);
+
+    if (message.type === "offer") {
+
+      await createPeer();
+
+      await peer.setRemoteDescription(
+        new RTCSessionDescription(message.offer)
+      );
+
+      const answer = await peer.createAnswer();
+
+      await peer.setLocalDescription(answer);
+
+      socket.send(JSON.stringify({
+        type: "answer",
+        answer: answer
+      }));
+    }
+
+    if (message.type === "answer") {
+
+      await peer.setRemoteDescription(
+        new RTCSessionDescription(message.answer)
+      );
+    }
+
+    if (message.type === "candidate") {
+
+      if (peer) {
+        try {
+          await peer.addIceCandidate(
+            new RTCIceCandidate(message.candidate)
+          );
+        } catch (e) {
+          console.log(e);
+        }
+      }
+    }
+  };
+}
+
+async function createPeer() {
+
+  peer = new RTCPeerConnection({
+    iceServers: [
+      {
+        urls: "stun:stun.l.google.com:19302"
+      }
+    ]
+  });
+
+  peer.onicecandidate = (event) => {
+
+    if (event.candidate) {
+
+      socket.send(JSON.stringify({
+        type: "candidate",
+        candidate: event.candidate
+      }));
+    }
+  };
+
+  peer.ontrack = (event) => {
+
+    video.srcObject = event.streams[0];
+
+    statusText.textContent =
+      "🔴 Live Camera Connected";
+  };
+}
+
+async function cameraMode() {
+
+  if (!roomInput.value) {
+    alert("पहले Room ID डालें");
+    return;
+  }
+
+  statusText.textContent =
+    "Camera permission माँगी जा रही है...";
+
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: false
+  });
+
+  video.srcObject = localStream;
+
+  connect();
+
+  await createPeer();
+
+  localStream.getTracks().forEach(track => {
+    peer.addTrack(track, localStream);
+  });
+
+  statusText.textContent =
+    "📷 Camera ON — Viewer का इंतजार है";
+
+  setTimeout(async () => {
+
+    const offer = await peer.createOffer();
+
+    await peer.setLocalDescription(offer);
+
+    socket.send(JSON.stringify({
+      type: "offer",
+      offer: offer
+    }));
+
+  }, 1000);
+}
+
+async function viewerMode() {
+
+  if (!roomInput.value) {
+    alert("पहले Room ID डालें");
+    return;
+  }
+
+  video.muted = false;
+
+  await createPeer();
+
+  connect();
+
+  statusText.textContent =
+    "👀 Viewer — Camera का इंतजार है";
+}
+
+</script>
+
+</body>
+</html>
