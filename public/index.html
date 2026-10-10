@@ -1,211 +1,378 @@
 <!DOCTYPE html>
-<html>
+<html lang="hi">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Live Camera</title>
-
-  <style>
-    body {
-      font-family: Arial;
-      text-align: center;
-      padding: 20px;
-    }
-
-    input, button {
-      padding: 12px;
-      margin: 6px;
-      font-size: 16px;
-    }
-
-    video {
-      width: 100%;
-      max-width: 600px;
-      background: black;
-      margin-top: 15px;
-    }
-
-    #status {
-      font-weight: bold;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Camera</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{min-height:100vh;display:flex;padding:16px;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:linear-gradient(135deg,#1e1b4b,#0f766e,#1d4ed8,#7c3aed);background-size:300% 300%;animation:bg 16s ease infinite}
+@keyframes bg{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+.card{width:100%;max-width:520px;margin:auto;padding:20px;border-radius:22px;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);box-shadow:0 10px 40px rgba(0,0,0,.3)}
+h1{font-size:26px;margin-bottom:4px}
+.sub{opacity:.8;font-size:14px;margin-bottom:18px}
+input{width:100%;padding:14px;border-radius:14px;border:2px solid rgba(255,255,255,.3);background:rgba(0,0,0,.25);color:#fff;font-size:16px;margin-bottom:12px;outline:none}
+input:focus{border-color:#38bdf8}
+input::placeholder{color:rgba(255,255,255,.6)}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{padding:13px 10px;border:0;border-radius:14px;font-size:15px;font-weight:600;color:#fff;background:rgba(255,255,255,.2);cursor:pointer}
+button:active{transform:scale(.97)}
+.b-cam{background:linear-gradient(135deg,#f97316,#ef4444)}
+.b-view{background:linear-gradient(135deg,#22c55e,#0ea5e9)}
+.danger{background:rgba(239,68,68,.75)}
+.status{display:flex;align-items:center;gap:10px;padding:11px 16px;border-radius:999px;background:rgba(0,0,0,.35);font-size:15px}
+.dot{flex:none;width:12px;height:12px;border-radius:50%;background:#94a3b8}
+.dot.ok{background:#22c55e;box-shadow:0 0 10px #22c55e}
+.dot.warn{background:#f59e0b;box-shadow:0 0 10px #f59e0b}
+.dot.live{background:#ef4444;box-shadow:0 0 10px #ef4444;animation:pulse 1.2s infinite}
+@keyframes pulse{50%{opacity:.3}}
+.room{margin:10px 4px;font-size:13px;opacity:.8}
+video{width:100%;aspect-ratio:16/9;object-fit:contain;border-radius:16px;background:#000;border:2px solid rgba(255,255,255,.25)}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.hidden{display:none!important}
+</style>
 </head>
-
 <body>
+<div class="card">
+  <h1>📹 Live Camera</h1>
+  <p class="sub">एक फ़ोन Camera, बाकी Viewer</p>
 
-<h2>📷 Live Camera</h2>
+  <div id="setup">
+    <input id="room" placeholder="Room ID लिखें (जैसे room1)" autocomplete="off" autocapitalize="off">
+    <div class="btns">
+      <button class="b-cam" onclick="startApp('camera')">📷 Camera</button>
+      <button class="b-view" onclick="startApp('viewer')">👀 Viewer</button>
+    </div>
+  </div>
 
-<input id="room" placeholder="Room ID">
-
-<br>
-
-<button onclick="cameraMode()">Camera Phone</button>
-<button onclick="viewerMode()">Viewer Phone</button>
-
-<p id="status">Room ID डालें और mode चुनें</p>
-
-<video id="video" autoplay playsinline muted></video>
+  <div id="stage" class="hidden">
+    <div class="status"><span id="dot" class="dot"></span><span id="statusText"></span></div>
+    <div id="roomLabel" class="room"></div>
+    <video id="video" autoplay playsinline></video>
+    <div class="controls">
+      <button id="switchBtn" onclick="switchCamera()">🔄 कैमरा बदलें</button>
+      <button id="micBtn" onclick="toggleMic()">🎤 Mic ON</button>
+      <button onclick="goFull()">⛶ Fullscreen</button>
+      <button class="danger" onclick="leaveRoom()">✖ बंद करें</button>
+    </div>
+  </div>
+</div>
 
 <script>
+const el = (id) => document.getElementById(id);
+const video = el("video");
 
-const roomInput = document.getElementById("room");
-const statusText = document.getElementById("status");
-const video = document.getElementById("video");
+const ICE = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    {
+      urls: [
+        "turn:openrelay.metered.ca:80",
+        "turn:openrelay.metered.ca:443",
+        "turn:openrelay.metered.ca:443?transport=tcp",
+        "turns:openrelay.metered.ca:443?transport=tcp"
+      ],
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    }
+  ]
+};
 
-let socket;
-let peer;
-let localStream;
+let socket = null, role = null, roomId = "", wantOpen = false;
+let localStream = null, facing = "environment", wakeLock = null, pingTimer = null;
+const pcs = new Map();
 
-function connect() {
+function setStatus(text, kind) {
+  el("statusText").textContent = text;
+  el("dot").className = "dot " + (kind || "");
+}
 
-  socket = new WebSocket(
-    (location.protocol === "https:" ? "wss://" : "ws://")
-    + location.host
-  );
+function send(obj) {
+  if (socket && socket.readyState === 1) socket.send(JSON.stringify(obj));
+}
 
-  socket.onopen = () => {
+function sendTo(to, obj) {
+  obj.to = to;
+  send(obj);
+}
 
-    socket.send(JSON.stringify({
-      type: "join",
-      room: roomInput.value
-    }));
+function refresh() {
+  if (!wantOpen) return;
+  const connected = [...pcs.values()].filter((e) => e.pc.connectionState === "connected").length;
+  if (!socket || socket.readyState !== 1) {
+    setStatus("🔄 दोबारा जुड़ रहे हैं...", "warn");
+    return;
+  }
+  if (role === "camera") {
+    if (connected > 0) setStatus("📷 Camera ON — " + connected + " viewer देख रहे हैं", "live");
+    else setStatus("📷 Camera ON — Viewer का इंतज़ार है", "ok");
+  } else {
+    if (connected > 0) setStatus("🔴 Live — Camera जुड़ गया", "live");
+    else if (pcs.size > 0) setStatus("⏳ Camera से जुड़ रहे हैं...", "warn");
+    else setStatus("👀 Viewer — Camera का इंतज़ार है", "ok");
+  }
+}
 
-    statusText.textContent = "Room से connected";
+function closePeer(id) {
+  const e = pcs.get(id);
+  if (!e) return;
+  clearTimeout(e.timer);
+  e.pc.onconnectionstatechange = null;
+  e.pc.close();
+  pcs.delete(id);
+}
+
+function closeAllPeers() {
+  for (const id of [...pcs.keys()]) closePeer(id);
+}
+
+function makePeer(id) {
+  closePeer(id);
+  const pc = new RTCPeerConnection(ICE);
+  const entry = { pc: pc, pending: [], timer: null };
+  pcs.set(id, entry);
+
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate) sendTo(id, { type: "candidate", candidate: ev.candidate });
   };
 
-  socket.onmessage = async (event) => {
-
-    const message = JSON.parse(event.data);
-
-    if (message.type === "offer") {
-
-      await createPeer();
-
-      await peer.setRemoteDescription(
-        new RTCSessionDescription(message.offer)
-      );
-
-      const answer = await peer.createAnswer();
-
-      await peer.setLocalDescription(answer);
-
-      socket.send(JSON.stringify({
-        type: "answer",
-        answer: answer
-      }));
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    clearTimeout(entry.timer);
+    if ((s === "failed" || s === "disconnected") && role === "camera") {
+      entry.timer = setTimeout(() => {
+        if (pcs.get(id) === entry) callPeer(id);
+      }, s === "failed" ? 500 : 4000);
     }
+    refresh();
+  };
 
-    if (message.type === "answer") {
+  if (role === "viewer") {
+    pc.ontrack = (ev) => {
+      video.srcObject = ev.streams[0];
+      video.play().catch(() => {
+        video.muted = true;
+        video.play().catch(() => {});
+      });
+      refresh();
+    };
+  }
+  return entry;
+}
 
-      await peer.setRemoteDescription(
-        new RTCSessionDescription(message.answer)
-      );
-    }
+async function flush(entry) {
+  const list = entry.pending.splice(0);
+  for (const c of list) {
+    try { await entry.pc.addIceCandidate(c); } catch (e) {}
+  }
+}
 
-    if (message.type === "candidate") {
+async function callPeer(id) {
+  if (!localStream) return;
+  const entry = makePeer(id);
+  localStream.getTracks().forEach((t) => entry.pc.addTrack(t, localStream));
+  const offer = await entry.pc.createOffer();
+  await entry.pc.setLocalDescription(offer);
+  sendTo(id, { type: "offer", offer: entry.pc.localDescription });
+}
 
-      if (peer) {
-        try {
-          await peer.addIceCandidate(
-            new RTCIceCandidate(message.candidate)
-          );
-        } catch (e) {
-          console.log(e);
+async function onMessage(ev) {
+  let m;
+  try { m = JSON.parse(ev.data); } catch (e) { return; }
+  try {
+    if (m.type === "joined") {
+      if (role === "camera") {
+        for (const p of m.peers) {
+          if (p.role === "viewer") await callPeer(p.id);
         }
       }
-    }
-  };
-}
-
-async function createPeer() {
-
-  peer = new RTCPeerConnection({
-    iceServers: [
-      {
-        urls: "stun:stun.l.google.com:19302"
+      refresh();
+    } else if (m.type === "peer-joined") {
+      if (role === "camera" && m.role === "viewer") await callPeer(m.id);
+      refresh();
+    } else if (m.type === "peer-left") {
+      closePeer(m.id);
+      if (role === "viewer" && pcs.size === 0) video.srcObject = null;
+      refresh();
+    } else if (m.type === "offer" && role === "viewer") {
+      const e = makePeer(m.from);
+      await e.pc.setRemoteDescription(m.offer);
+      await flush(e);
+      const answer = await e.pc.createAnswer();
+      await e.pc.setLocalDescription(answer);
+      sendTo(m.from, { type: "answer", answer: e.pc.localDescription });
+      refresh();
+    } else if (m.type === "answer") {
+      const e = pcs.get(m.from);
+      if (e) {
+        await e.pc.setRemoteDescription(m.answer);
+        await flush(e);
       }
-    ]
-  });
+    } else if (m.type === "candidate") {
+      const e = pcs.get(m.from);
+      if (!e) return;
+      if (e.pc.remoteDescription) {
+        try { await e.pc.addIceCandidate(m.candidate); } catch (err) {}
+      } else {
+        e.pending.push(m.candidate);
+      }
+    }
+  } catch (err) {
+    console.log(err);
+  }
+}
 
-  peer.onicecandidate = (event) => {
-
-    if (event.candidate) {
-
-      socket.send(JSON.stringify({
-        type: "candidate",
-        candidate: event.candidate
-      }));
+function connect() {
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  const s = new WebSocket(proto + location.host);
+  socket = s;
+  s.onopen = () => {
+    send({ type: "join", room: roomId, role: role });
+    clearInterval(pingTimer);
+    pingTimer = setInterval(() => send({ type: "ping" }), 25000);
+  };
+  s.onmessage = onMessage;
+  s.onclose = () => {
+    if (socket !== s) return;
+    clearInterval(pingTimer);
+    closeAllPeers();
+    if (role === "viewer") video.srcObject = null;
+    refresh();
+    if (wantOpen) {
+      setTimeout(() => {
+        if (wantOpen && socket === s) connect();
+      }, 2000);
     }
   };
-
-  peer.ontrack = (event) => {
-
-    video.srcObject = event.streams[0];
-
-    statusText.textContent =
-      "🔴 Live Camera Connected";
-  };
+  s.onerror = () => {};
 }
 
-async function cameraMode() {
+async function getStream(face) {
+  const v = { facingMode: { ideal: face }, width: { ideal: 1280 }, height: { ideal: 720 } };
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: v, audio: true });
+  } catch (e) {
+    return await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+  }
+}
 
-  if (!roomInput.value) {
-    alert("पहले Room ID डालें");
-    return;
+async function keepAwake() {
+  try {
+    if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen");
+  } catch (e) {}
+}
+
+async function startApp(r) {
+  const room = el("room").value.trim();
+  if (!room) { alert("पहले Room ID डालें"); return; }
+  role = r;
+  roomId = room;
+
+  if (r === "camera") {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("इस ब्राउज़र में कैमरा नहीं चलेगा। https वाला लिंक Chrome में खोलें।");
+      return;
+    }
+    try {
+      localStream = await getStream(facing);
+    } catch (e) {
+      alert("Camera की permission नहीं मिली");
+      return;
+    }
+    video.srcObject = localStream;
+    video.muted = true;
+    video.play().catch(() => {});
+    keepAwake();
+  } else {
+    video.muted = false;
   }
 
-  statusText.textContent =
-    "Camera permission माँगी जा रही है...";
+  el("setup").classList.add("hidden");
+  el("stage").classList.remove("hidden");
+  el("switchBtn").classList.toggle("hidden", r !== "camera");
+  el("micBtn").classList.toggle("hidden", r !== "camera");
+  el("roomLabel").textContent = "Room: " + room;
+  wantOpen = true;
+  setStatus("🔄 जुड़ रहे हैं...", "warn");
+  connect();
+}
 
-  localStream = await navigator.mediaDevices.getUserMedia({
-    video: true,
-    audio: false
-  });
-
+async function switchCamera() {
+  if (!localStream) return;
+  const old = facing;
+  facing = facing === "environment" ? "user" : "environment";
+  localStream.getVideoTracks().forEach((t) => t.stop());
+  let nt = null;
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false });
+    nt = s.getVideoTracks()[0];
+  } catch (e) {
+    facing = old;
+    try {
+      const s2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: old } }, audio: false });
+      nt = s2.getVideoTracks()[0];
+    } catch (e2) {
+      alert("कैमरा बदल नहीं पाया");
+      return;
+    }
+  }
+  localStream.getVideoTracks().forEach((t) => localStream.removeTrack(t));
+  localStream.addTrack(nt);
+  for (const e of pcs.values()) {
+    const sender = e.pc.getSenders().find((x) => x.track && x.track.kind === "video");
+    if (sender) sender.replaceTrack(nt).catch(() => {});
+  }
   video.srcObject = localStream;
-
-  connect();
-
-  await createPeer();
-
-  localStream.getTracks().forEach(track => {
-    peer.addTrack(track, localStream);
-  });
-
-  statusText.textContent =
-    "📷 Camera ON — Viewer का इंतजार है";
-
-  setTimeout(async () => {
-
-    const offer = await peer.createOffer();
-
-    await peer.setLocalDescription(offer);
-
-    socket.send(JSON.stringify({
-      type: "offer",
-      offer: offer
-    }));
-
-  }, 1000);
+  video.play().catch(() => {});
 }
 
-async function viewerMode() {
+function toggleMic() {
+  if (!localStream) return;
+  const tracks = localStream.getAudioTracks();
+  if (!tracks.length) { alert("Mic उपलब्ध नहीं है"); return; }
+  const on = !tracks[0].enabled;
+  tracks.forEach((t) => { t.enabled = on; });
+  el("micBtn").textContent = on ? "🎤 Mic ON" : "🔇 Mic OFF";
+}
 
-  if (!roomInput.value) {
-    alert("पहले Room ID डालें");
-    return;
+function goFull() {
+  const f = video.requestFullscreen || video.webkitRequestFullscreen || video.webkitEnterFullscreen;
+  if (f) f.call(video);
+}
+
+function leaveRoom() {
+  wantOpen = false;
+  clearInterval(pingTimer);
+  if (socket) {
+    socket.onclose = null;
+    socket.close();
+    socket = null;
   }
-
-  video.muted = false;
-
-  await createPeer();
-
-  connect();
-
-  statusText.textContent =
-    "👀 Viewer — Camera का इंतजार है";
+  closeAllPeers();
+  if (localStream) {
+    localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+  }
+  video.srcObject = null;
+  if (wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+  el("micBtn").textContent = "🎤 Mic ON";
+  el("stage").classList.add("hidden");
+  el("setup").classList.remove("hidden");
 }
 
-</script>
+video.onclick = () => {
+  video.muted = role === "camera";
+  video.play().catch(() => {});
+};
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !wantOpen) return;
+  if (role === "camera") keepAwake();
+  if (!socket || socket.readyState > 1) connect();
+});
+</script>
 </body>
 </html>
